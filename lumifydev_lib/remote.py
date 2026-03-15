@@ -25,12 +25,12 @@ def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, 
     prompt_b64 = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     worktree_dir = f"$HOME/dev/worktrees/{worktree_name}"
 
-    # Build setup commands block
+    # Build setup commands block — runs in worktree dir after creation
     if setup_commands:
-        setup_lines = ['cd "$WORKTREE_DIR"', 'echo "Running setup..."']
+        setup_lines = ['cd "$WORK_DIR"', 'echo "Running setup..."']
         for cmd in setup_commands:
             setup_lines.append(f"echo '  → {cmd}'")
-            setup_lines.append(cmd)
+            setup_lines.append(f'{cmd} 2>&1 || echo "Warning: {cmd} failed"')
         setup_lines.append('echo "Setup complete."')
         setup_block = "\n        ".join(setup_lines)
     else:
@@ -71,8 +71,6 @@ elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
                 cp '{vm_project_dir}/'$envfile "$WORKTREE_DIR/$envfile"
             fi
         done
-        # Run setup commands in worktree
-        {setup_block}
     else
         echo "Worktree creation failed, using main repo"
     fi
@@ -80,6 +78,9 @@ elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
 else
     echo "Not a git repo, using directory directly"
 fi
+
+# Run setup commands in the work directory (worktree or main repo)
+{setup_block}
 
 # Create tmux session
 if tmux has-session -t '{session_name}' 2>/dev/null; then
