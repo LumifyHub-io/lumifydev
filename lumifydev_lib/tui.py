@@ -52,20 +52,58 @@ def run_tui(_args=None):
 
     while True:
         try:
-            board = boards_menu(config)
-            if board is None:
+            result = main_menu(config)
+            if result is None:
                 return
-
-            while True:
-                card = cards_menu(config, board)
-                if card is None:
-                    break  # Back to boards
-
-                action_result = card_action_menu(config, card)
-                if action_result == "back_to_boards":
-                    break
         except KeyboardInterrupt:
             return
+
+
+def main_menu(config):
+    """Top-level menu: Boards, Latest Cards, Oldest Cards."""
+    clear_screen()
+    print(f"{C_BOLD}{C_YELLOW}Main Menu{C_RESET}")
+    print()
+    print(f"  {C_BOLD}{C_CYAN}1{C_RESET}) Boards")
+    print(f"  {C_BOLD}{C_CYAN}2{C_RESET}) Latest Cards")
+    print(f"  {C_BOLD}{C_CYAN}3{C_RESET}) Oldest Cards")
+    print()
+    print(f"  {C_DIM}q) Quit{C_RESET}")
+    print()
+    print(f"{C_BOLD}Select: {C_RESET}", end="", flush=True)
+
+    ch = read_char()
+    print(ch)
+
+    if ch in ("q", "Q", "\x03"):
+        return None
+
+    if ch == "1":
+        board = boards_menu(config)
+        if board is None:
+            return "continue"
+        while True:
+            card = cards_menu(config, board)
+            if card is None:
+                break
+            action_result = card_action_menu(config, card)
+            if action_result == "back_to_boards":
+                break
+        return "continue"
+
+    if ch == "2":
+        card = cross_board_cards_menu(config, sort="newest")
+        if card is not None:
+            card_action_menu(config, card)
+        return "continue"
+
+    if ch == "3":
+        card = cross_board_cards_menu(config, sort="oldest")
+        if card is not None:
+            card_action_menu(config, card)
+        return "continue"
+
+    return "continue"  # Invalid key, redraw
 
 
 def boards_menu(config):
@@ -228,6 +266,116 @@ def cards_menu(config, board):
             return selected_card
 
         # Invalid input, redraw same page
+
+
+def cross_board_cards_menu(config, sort="newest"):
+    """Show cards from all boards sorted by date. Returns card dict or None."""
+    clear_screen()
+    label = "Latest" if sort == "newest" else "Oldest"
+    print(f"{C_DIM}Loading {label.lower()} cards across all boards...{C_RESET}")
+
+    try:
+        boards_data = api(config, "/api/v1/integrations/boards")
+    except APIError as e:
+        clear_screen()
+        print(f"{C_RED}Failed to load boards: {e}{C_RESET}")
+        wait_for_key()
+        return None
+
+    boards = boards_data.get("boards", [])
+    if not boards:
+        clear_screen()
+        print(f"{C_DIM}No boards found.{C_RESET}")
+        wait_for_key()
+        return None
+
+    # Fetch cards from all boards
+    all_cards = []
+    board_names = {}
+    for board in boards:
+        board_id = board["id"]
+        board_title = board.get("title", "Untitled")
+        board_icon = board.get("icon", "")
+        board_label = f"{board_icon} {board_title}".strip() if board_icon else board_title
+        board_names[board_id] = board_label
+
+        try:
+            data = api(config, f"/api/v1/integrations/boards/{board_id}/cards")
+            for card in data.get("cards", []):
+                card["_board_label"] = board_label
+                card["_board_id"] = board_id
+                all_cards.append(card)
+        except APIError:
+            continue
+
+    if not all_cards:
+        clear_screen()
+        print(f"{C_DIM}No cards found across any board.{C_RESET}")
+        wait_for_key()
+        return None
+
+    # Sort by created_at
+    reverse = sort == "newest"
+    all_cards.sort(key=lambda c: c.get("created_at", ""), reverse=reverse)
+
+    # Paginate
+    page = 0
+    page_size = 9
+
+    while True:
+        clear_screen()
+        print(f"{C_BOLD}{C_YELLOW}{label} Cards{C_RESET} {C_DIM}({len(all_cards)} total){C_RESET}")
+        print()
+
+        start = page * page_size
+        end = min(start + page_size, len(all_cards))
+        page_cards = all_cards[start:end]
+
+        for i, card in enumerate(page_cards):
+            key = i + 1
+            title = card.get("title", "Untitled")
+            board_label = card.get("_board_label", "")
+            list_name = card.get("list_name", "")
+            completed = card.get("completed", False)
+            marker = f"{C_GREEN}✓{C_RESET}" if completed else " "
+            print(f"  {C_BOLD}{C_CYAN}{key}{C_RESET}) {marker} {title}")
+            print(f"     {C_DIM}{board_label} → {list_name}{C_RESET}")
+
+        print()
+
+        nav_parts = []
+        if page > 0:
+            nav_parts.append(f"{C_MAGENTA}p{C_RESET}) prev")
+        if end < len(all_cards):
+            nav_parts.append(f"{C_MAGENTA}n{C_RESET}) next")
+        nav_parts.append(f"{C_DIM}0) back{C_RESET}")
+
+        if len(all_cards) > page_size:
+            page_num = page + 1
+            total_pages = (len(all_cards) + page_size - 1) // page_size
+            print(f"  {C_DIM}Page {page_num}/{total_pages}{C_RESET}  {' | '.join(nav_parts)}")
+        else:
+            print(f"  {' | '.join(nav_parts)}")
+
+        print()
+        print(f"{C_BOLD}Select: {C_RESET}", end="", flush=True)
+
+        ch = read_char()
+        print(ch)
+
+        if ch in ("0", "q", "Q", "\x03"):
+            return None
+
+        if ch in ("n", "N") and end < len(all_cards):
+            page += 1
+            continue
+
+        if ch in ("p", "P") and page > 0:
+            page -= 1
+            continue
+
+        if ch.isdigit() and 1 <= int(ch) <= len(page_cards):
+            return page_cards[int(ch) - 1]
 
 
 def card_action_menu(config, card):
