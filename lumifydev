@@ -1,0 +1,644 @@
+#!/usr/bin/env python3
+"""
+LumifyDev — Turn LumifyHub kanban cards into async Claude Code sessions.
+
+Point at a board card, kick off a Claude Code session on your VM,
+and get status updates posted back to the card automatically.
+
+Requires a LumifyHub account (https://lumifyhub.io) and API key.
+"""
+
+import argparse
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# ─── Constants ───────────────────────────────────────────────────────────────
+
+VERSION = "0.1.0"
+CONFIG_DIR = os.path.expanduser("~/.config/lumifydev")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+DEFAULT_API_URL = "https://lumifyhub.io"
+
+# ANSI colors
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_DIM = "\033[2m"
+C_RED = "\033[31m"
+C_GREEN = "\033[32m"
+C_YELLOW = "\033[33m"
+C_BLUE = "\033[34m"
+C_CYAN = "\033[36m"
+
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+
+def load_config():
+    """Load config from ~/.config/lumifydev/config.json"""
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    with open(CONFIG_FILE) as f:
+        return json.load(f)
+
+
+def save_config(config):
+    """Save config to ~/.config/lumifydev/config.json"""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def require_config():
+    """Load config or exit with setup instructions."""
+    config = load_config()
+    if not config or not config.get("api_key"):
+        print(f"{C_RED}Not configured.{C_RESET} Run: lumifydev config")
+        sys.exit(1)
+    return config
+
+
+def cmd_config(_args):
+    """Interactive config setup."""
+    print(f"{C_BOLD}LumifyDev Setup{C_RESET}")
+    print(f"{C_DIM}Configure your LumifyHub workspace and VM connection.{C_RESET}")
+    print()
+
+    existing = load_config() or {}
+
+    # API URL
+    default_url = existing.get("api_url", DEFAULT_API_URL)
+    api_url = input(f"LumifyHub API URL [{default_url}]: ").strip() or default_url
+
+    # API Key
+    existing_key = existing.get("api_key", "")
+    key_hint = f" [{existing_key[:12]}...]" if existing_key else ""
+    api_key = input(f"API key (from LumifyHub workspace settings){key_hint}: ").strip()
+    if not api_key and existing_key:
+        api_key = existing_key
+
+    if not api_key:
+        print(f"{C_RED}API key is required.{C_RESET}")
+        print(f"Get one from your LumifyHub workspace: Settings → API Keys")
+        sys.exit(1)
+
+    # Verify the API key
+    print(f"{C_DIM}Verifying API key...{C_RESET}")
+    try:
+        data = api_request(api_url, api_key, "/api/v1/integrations/auth/verify")
+        workspace_id = data.get("workspace", {}).get("id", "")
+        workspace_name = data.get("workspace", {}).get("name", "Unknown")
+        print(f"{C_GREEN}Connected to workspace: {workspace_name}{C_RESET}")
+    except APIError as e:
+        print(f"{C_RED}API key verification failed: {e}{C_RESET}")
+        sys.exit(1)
+
+    # VM Host
+    default_host = existing.get("vm_host", "")
+    host_hint = f" [{default_host}]" if default_host else " (e.g. root@your-vm-ip)"
+    vm_host = input(f"VM SSH host{host_hint}: ").strip() or default_host
+
+    # Project directory
+    default_project_dir = existing.get("project_dir", "")
+    dir_hint = f" [{default_project_dir}]" if default_project_dir else " (e.g. ~/dev/my-project)"
+    project_dir = input(f"Local project directory{dir_hint}: ").strip() or default_project_dir
+
+    # Project name (derived from dir if not set)
+    default_project_name = existing.get("project_name", "")
+    if not default_project_name and project_dir:
+        default_project_name = os.path.basename(os.path.expanduser(project_dir))
+    name_hint = f" [{default_project_name}]" if default_project_name else ""
+    project_name = input(f"Project name{name_hint}: ").strip() or default_project_name
+
+    # VM project directory (where the repo lives on the VM)
+    default_vm_dir = existing.get("vm_project_dir", "")
+    if not default_vm_dir and project_dir:
+        # Auto-derive: ~/dev/X → /root/dev/X
+        expanded = os.path.expanduser(project_dir)
+        home = os.path.expanduser("~")
+        if expanded.startswith(os.path.join(home, "dev")):
+            rel = os.path.relpath(expanded, os.path.join(home, "dev"))
+            default_vm_dir = f"/root/dev/{rel}"
+    vm_dir_hint = f" [{default_vm_dir}]" if default_vm_dir else " (e.g. /root/dev/my-project)"
+    vm_project_dir = input(f"VM project directory{vm_dir_hint}: ").strip() or default_vm_dir
+
+    config = {
+        "api_url": api_url,
+        "api_key": api_key,
+        "workspace_id": workspace_id,
+        "vm_host": vm_host,
+        "project_dir": project_dir,
+        "project_name": project_name,
+        "vm_project_dir": vm_project_dir,
+    }
+
+    save_config(config)
+    print()
+    print(f"{C_GREEN}Config saved to {CONFIG_FILE}{C_RESET}")
+
+
+# ─── API Client ──────────────────────────────────────────────────────────────
+
+class APIError(Exception):
+    """Raised when an API request fails."""
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def api_request(api_url, api_key, path, method="GET", body=None):
+    """Make an authenticated request to the LumifyHub API."""
+    url = f"{api_url}{path}"
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            error_body = json.loads(e.read().decode("utf-8"))
+            msg = error_body.get("error", str(e))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            msg = str(e)
+        raise APIError(msg, status_code=e.code)
+    except urllib.error.URLError as e:
+        raise APIError(f"Connection failed: {e.reason}")
+
+
+def api(config, path, method="GET", body=None):
+    """Shorthand for api_request using loaded config."""
+    return api_request(config["api_url"], config["api_key"], path, method, body)
+
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+def cmd_boards(_args):
+    """List boards in the workspace."""
+    config = require_config()
+    data = api(config, "/api/v1/integrations/boards")
+    boards = data.get("boards", [])
+
+    if not boards:
+        print(f"{C_DIM}No boards found in this workspace.{C_RESET}")
+        return
+
+    print(f"{C_BOLD}Boards{C_RESET} ({len(boards)})")
+    print(f"{C_DIM}{'─' * 60}{C_RESET}")
+
+    for board in boards:
+        board_id = board["id"][:8]
+        name = board.get("name", "Untitled")
+        print(f"  {C_CYAN}{board_id}{C_RESET}  {name}")
+
+    print()
+    print(f"{C_DIM}Use the full board ID with: lumifydev cards <board-id>{C_RESET}")
+
+
+def cmd_cards(args):
+    """List cards for a board."""
+    config = require_config()
+    board_id = args.board_id
+
+    # Fetch lists first so we can show grouping
+    lists_data = api(config, f"/api/v1/integrations/boards/{board_id}/lists")
+    lists = lists_data.get("lists", [])
+
+    # Fetch cards with optional list filter
+    path = f"/api/v1/integrations/boards/{board_id}/cards"
+    if args.list:
+        path += f"?list_name={urllib.parse.quote(args.list)}"
+
+    data = api(config, path)
+    cards = data.get("cards", [])
+
+    if not cards:
+        filter_msg = f' in list "{args.list}"' if args.list else ""
+        print(f"{C_DIM}No cards found{filter_msg}.{C_RESET}")
+        return
+
+    # Group cards by list name
+    by_list = {}
+    for card in cards:
+        list_name = card.get("list_name", "Unknown")
+        by_list.setdefault(list_name, []).append(card)
+
+    # Sort lists by position from lists_data
+    list_order = {l["name"]: l["position"] for l in lists}
+
+    total = len(cards)
+    print(f"{C_BOLD}Cards{C_RESET} ({total})")
+    print(f"{C_DIM}{'─' * 60}{C_RESET}")
+
+    for list_name in sorted(by_list.keys(), key=lambda n: list_order.get(n, 999)):
+        list_cards = by_list[list_name]
+        print(f"\n  {C_BOLD}{list_name}{C_RESET} ({len(list_cards)})")
+
+        for card in list_cards:
+            card_id = card["id"][:8]
+            title = card.get("title", "Untitled")
+            completed = card.get("completed", False)
+            marker = f"{C_GREEN}✓{C_RESET}" if completed else f"{C_DIM}○{C_RESET}"
+            print(f"    {marker} {C_CYAN}{card_id}{C_RESET}  {title}")
+
+    print()
+    print(f"{C_DIM}Use the full card ID with: lumifydev run <card-id>{C_RESET}")
+
+
+def cmd_run(args):
+    """Fetch card details and kick off a Claude Code session on the VM."""
+    config = require_config()
+    card_id = args.card_id
+    user_prompt = args.prompt
+
+    # Validate VM host is configured
+    vm_host = config.get("vm_host")
+    if not vm_host:
+        print(f"{C_RED}VM host not configured.{C_RESET} Run: lumifydev config")
+        sys.exit(1)
+
+    project_dir = config.get("project_dir")
+    if not project_dir:
+        print(f"{C_RED}Project directory not configured.{C_RESET} Run: lumifydev config")
+        sys.exit(1)
+
+    # Fetch card details
+    print(f"{C_DIM}Fetching card details...{C_RESET}")
+    data = api(config, f"/api/v1/integrations/boards/cards/{card_id}")
+    card = data.get("card", {})
+
+    title = card.get("title", "Untitled")
+    description = card.get("description", "")
+    list_name = card.get("list_name", "")
+    comments = card.get("comments", [])
+
+    print(f"{C_BOLD}{title}{C_RESET}")
+    if list_name:
+        print(f"{C_DIM}List: {list_name}{C_RESET}")
+    print()
+
+    # Compose prompt
+    prompt_parts = [
+        f"# Card: {title}",
+        f"Status: {list_name}" if list_name else "",
+    ]
+
+    if description:
+        prompt_parts.append(f"\n## Description\n{description}")
+
+    if comments:
+        prompt_parts.append("\n## Comments")
+        for comment in comments:
+            user_name = comment.get("user_name", "Unknown")
+            content = comment.get("content", "")
+            prompt_parts.append(f"- {user_name}: {content}")
+
+    if user_prompt:
+        prompt_parts.append(f"\n## Task\n{user_prompt}")
+    else:
+        prompt_parts.append("\n## Task\nImplement this card. Read the CLAUDE.md for project conventions.")
+
+    full_prompt = "\n".join(p for p in prompt_parts if p)
+
+    # Generate session name from card ID
+    session_name = f"card-{card_id[:8]}"
+    expanded_dir = os.path.expanduser(project_dir)
+    project_name = config.get("project_name", os.path.basename(expanded_dir))
+    worktree_name = f"{project_name}--{session_name}"
+
+    print(f"{C_DIM}Launching Claude Code session: {session_name}{C_RESET}")
+    print(f"{C_DIM}Project: {project_dir}{C_RESET}")
+    print()
+
+    # Launch session on VM
+    vm_project_dir = config.get("vm_project_dir", "")
+    if not vm_project_dir:
+        # Default mapping: ~/dev/X → /root/dev/X (or same relative path)
+        home = os.path.expanduser("~")
+        if expanded_dir.startswith(os.path.join(home, "dev")):
+            rel = os.path.relpath(expanded_dir, os.path.join(home, "dev"))
+            vm_project_dir = f"/root/dev/{rel}"
+        else:
+            print(f"{C_RED}Cannot determine VM project path.{C_RESET}")
+            print("Set 'vm_project_dir' in your config: lumifydev config")
+            sys.exit(1)
+
+    launch_remote_session(
+        vm_host=vm_host,
+        vm_project_dir=vm_project_dir,
+        session_name=session_name,
+        worktree_name=worktree_name,
+        prompt=full_prompt,
+    )
+
+    # Post comment back to the card
+    comment_content = (
+        f"[LumifyDev] Session started\n"
+        f"Session: {session_name}\n"
+        f"Worktree: {worktree_name}\n"
+        f"VM: {vm_host}"
+    )
+
+    try:
+        api(
+            config,
+            f"/api/v1/integrations/boards/cards/{card_id}/comments",
+            method="POST",
+            body={"content": comment_content},
+        )
+        print(f"{C_GREEN}Card updated with session info.{C_RESET}")
+    except APIError as e:
+        print(f"{C_YELLOW}Warning: Could not post comment to card: {e}{C_RESET}")
+
+    print()
+    print(f"{C_BOLD}Session is running.{C_RESET}")
+    print(f"  Attach:   ssh {vm_host} -t 'tmux attach -t {session_name}'")
+    print(f"  Status:   lumifydev status {card_id}")
+    print(f"  Checkout: lumifydev checkout {card_id}")
+
+
+def cmd_checkout(args):
+    """Checkout the worktree branch from a card's LumifyDev session."""
+    config = require_config()
+    card_id = args.card_id
+
+    session_info = get_session_info_from_card(config, card_id)
+    if not session_info:
+        print(f"{C_RED}No LumifyDev session found on this card.{C_RESET}")
+        sys.exit(1)
+
+    worktree_name = session_info["worktree"]
+    print(f"{C_DIM}Fetching and checking out branch: {worktree_name}{C_RESET}")
+
+    project_dir = os.path.expanduser(config.get("project_dir", "."))
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=project_dir,
+            check=True,
+            capture_output=True,
+        )
+        result = subprocess.run(
+            ["git", "checkout", worktree_name],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"{C_RED}Checkout failed:{C_RESET} {result.stderr.strip()}")
+            sys.exit(1)
+
+        print(f"{C_GREEN}Checked out: {worktree_name}{C_RESET}")
+    except subprocess.CalledProcessError as e:
+        print(f"{C_RED}Git error:{C_RESET} {e}")
+        sys.exit(1)
+
+
+def cmd_status(args):
+    """Peek at the tmux session output on the VM."""
+    config = require_config()
+    card_id = args.card_id
+
+    vm_host = config.get("vm_host")
+    if not vm_host:
+        print(f"{C_RED}VM host not configured.{C_RESET} Run: lumifydev config")
+        sys.exit(1)
+
+    session_info = get_session_info_from_card(config, card_id)
+    if not session_info:
+        print(f"{C_RED}No LumifyDev session found on this card.{C_RESET}")
+        sys.exit(1)
+
+    session_name = session_info["session"]
+    print(f"{C_DIM}Peeking at session: {session_name}{C_RESET}")
+    print(f"{C_DIM}{'─' * 60}{C_RESET}")
+
+    result = ssh_run(vm_host, f"tmux capture-pane -t '{session_name}' -p | tail -30")
+    if result.returncode != 0:
+        print(f"{C_YELLOW}Session may have ended.{C_RESET}")
+        if result.stderr:
+            print(f"{C_DIM}{result.stderr.strip()}{C_RESET}")
+    else:
+        print(result.stdout)
+
+
+# ─── Remote Session (self-contained, replaces cc-remote) ────────────────────
+
+def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, prompt):
+    """
+    Launch a Claude Code session on a remote VM via SSH + tmux.
+
+    This is self-contained — no dependency on cc-remote.
+    Flow: SSH → create git worktree → start tmux session → launch Claude → send prompt.
+    """
+    if not shutil.which("ssh"):
+        print(f"{C_RED}ssh not found on PATH.{C_RESET}")
+        sys.exit(1)
+
+    # Base64 encode prompt to avoid shell escaping issues
+    prompt_b64 = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
+
+    # Worktree path on the VM
+    worktree_dir = f"$HOME/dev/worktrees/{worktree_name}"
+
+    # Build the remote shell script
+    remote_script = f"""
+# Verify repo exists
+if [ ! -d '{vm_project_dir}' ]; then
+    echo 'Error: Repository not found at {vm_project_dir}'
+    exit 1
+fi
+
+# Try to create worktree, fall back to main repo
+WORKTREE_DIR="{worktree_dir}"
+WORK_DIR='{vm_project_dir}'
+
+if [ -d "$WORKTREE_DIR" ]; then
+    echo "Using existing worktree: $WORKTREE_DIR"
+    WORK_DIR="$WORKTREE_DIR"
+elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
+    cd '{vm_project_dir}'
+    # Determine base branch
+    BASE_BRANCH="main"
+    if ! git rev-parse --verify main >/dev/null 2>&1; then
+        BASE_BRANCH="master"
+    fi
+    # Create worktree
+    mkdir -p "$HOME/dev/worktrees"
+    if git worktree add -b '{worktree_name}' "$WORKTREE_DIR" "$BASE_BRANCH" 2>/dev/null; then
+        WORK_DIR="$WORKTREE_DIR"
+        echo "Created worktree: $WORKTREE_DIR"
+        # Copy env files to worktree
+        for envfile in .env .env.local .env.development .env.development.local; do
+            if [ -f '{vm_project_dir}/'$envfile ]; then
+                cp '{vm_project_dir}/'$envfile "$WORKTREE_DIR/$envfile"
+            fi
+        done
+    else
+        echo "Worktree creation failed, using main repo"
+    fi
+    cd - > /dev/null
+else
+    echo "Not a git repo, using directory directly"
+fi
+
+# Create tmux session
+if tmux has-session -t '{session_name}' 2>/dev/null; then
+    echo 'Session already exists'
+else
+    tmux new-session -d -s '{session_name}' -c "$WORK_DIR"
+
+    # Start Claude Code
+    tmux send-keys -t '{session_name}' 'claude --dangerously-skip-permissions' Enter
+
+    # Wait for Claude to initialize, then send prompt
+    sleep 4
+
+    # Decode and send prompt
+    PROMPT=$(echo '{prompt_b64}' | base64 -d)
+    tmux send-keys -t '{session_name}' "$PROMPT"
+    sleep 0.2
+    tmux send-keys -t '{session_name}' Enter
+
+    echo 'Session created and Claude started with prompt'
+fi
+"""
+
+    print(f"{C_DIM}Connecting to {vm_host}...{C_RESET}")
+    result = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=10", vm_host, remote_script],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print(f"{C_RED}Failed to launch remote session:{C_RESET}")
+        print(result.stderr or result.stdout)
+        sys.exit(1)
+
+    if result.stdout.strip():
+        print(result.stdout.strip())
+
+
+def ssh_run(vm_host, command):
+    """Run a command on the VM via SSH and return stdout."""
+    result = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", vm_host, command],
+        capture_output=True,
+        text=True,
+    )
+    return result
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def get_session_info_from_card(config, card_id):
+    """Parse the most recent LumifyDev comment from a card to extract session info."""
+    data = api(config, f"/api/v1/integrations/boards/cards/{card_id}")
+    card = data.get("card", {})
+    comments = card.get("comments", [])
+
+    # Find the most recent LumifyDev comment (search from newest)
+    for comment in reversed(comments):
+        content = comment.get("content", "")
+        if "[LumifyDev]" not in content:
+            continue
+
+        info = {}
+        for line in content.split("\n"):
+            if line.startswith("Session: "):
+                info["session"] = line.split("Session: ", 1)[1].strip()
+            elif line.startswith("Worktree: "):
+                info["worktree"] = line.split("Worktree: ", 1)[1].strip()
+            elif line.startswith("VM: "):
+                info["vm"] = line.split("VM: ", 1)[1].strip()
+
+        if "session" in info and "worktree" in info:
+            return info
+
+    return None
+
+
+# ─── CLI Entry Point ─────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="lumifydev",
+        description="Turn LumifyHub kanban cards into async Claude Code sessions.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"lumifydev {VERSION}"
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # config
+    sub_config = subparsers.add_parser("config", help="Configure LumifyDev")
+    sub_config.set_defaults(func=cmd_config)
+
+    # boards
+    sub_boards = subparsers.add_parser("boards", help="List boards in workspace")
+    sub_boards.set_defaults(func=cmd_boards)
+
+    # cards
+    sub_cards = subparsers.add_parser("cards", help="List cards on a board")
+    sub_cards.add_argument("board_id", help="Board ID")
+    sub_cards.add_argument("--list", help="Filter by list name (e.g. 'In Progress')")
+    sub_cards.set_defaults(func=cmd_cards)
+
+    # run
+    sub_run = subparsers.add_parser(
+        "run", help="Kick off a Claude Code session for a card"
+    )
+    sub_run.add_argument("card_id", help="Card ID")
+    sub_run.add_argument(
+        "--prompt", "-p",
+        help="Additional instructions (default: 'Implement this card')",
+    )
+    sub_run.set_defaults(func=cmd_run)
+
+    # checkout
+    sub_checkout = subparsers.add_parser(
+        "checkout", help="Checkout the worktree branch for a card"
+    )
+    sub_checkout.add_argument("card_id", help="Card ID")
+    sub_checkout.set_defaults(func=cmd_checkout)
+
+    # status
+    sub_status = subparsers.add_parser(
+        "status", help="Peek at the VM session output for a card"
+    )
+    sub_status.add_argument("card_id", help="Card ID")
+    sub_status.set_defaults(func=cmd_status)
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    try:
+        args.func(args)
+    except APIError as e:
+        print(f"{C_RED}API error: {e}{C_RESET}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
