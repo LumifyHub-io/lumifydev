@@ -2,7 +2,7 @@
 
 import unittest
 
-from lumifydev_lib.remote import build_prompt, parse_session_comment
+from lumifydev_lib.remote import build_prompt, parse_session_comment, json_content_to_text
 
 
 class TestBuildPrompt(unittest.TestCase):
@@ -95,6 +95,82 @@ class TestParseSessionComment(unittest.TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info["session"], "card-xyz")
         self.assertEqual(info["worktree"], "proj--card-xyz")
+
+
+class TestJsonContentToText(unittest.TestCase):
+    def test_plain_string_passthrough(self):
+        self.assertEqual(json_content_to_text("hello"), "hello")
+
+    def test_simple_paragraph(self):
+        content = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "Hello world"}],
+                }
+            ],
+        }
+        self.assertEqual(json_content_to_text(content), "Hello world")
+
+    def test_multi_paragraph(self):
+        content = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line 1"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line 2"}]},
+            ],
+        }
+        self.assertEqual(json_content_to_text(content), "Line 1\nLine 2")
+
+    def test_empty_paragraph(self):
+        content = {
+            "type": "doc",
+            "content": [{"type": "paragraph"}],
+        }
+        self.assertEqual(json_content_to_text(content), "")
+
+    def test_lumifydev_comment_as_json(self):
+        content = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "[LumifyDev] Session started"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Session: card-abc12345"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Worktree: proj--card-abc12345"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "VM: root@1.2.3.4"}]},
+            ],
+        }
+        text = json_content_to_text(content)
+        self.assertIn("[LumifyDev]", text)
+        self.assertIn("Session: card-abc12345", text)
+        self.assertIn("Worktree: proj--card-abc12345", text)
+
+
+class TestParseSessionCommentJSONContent(unittest.TestCase):
+    def test_parse_json_content_comment(self):
+        content = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "[LumifyDev] Session started"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Session: card-xyz"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Worktree: proj--card-xyz"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "VM: root@1.2.3.4"}]},
+            ],
+        }
+        info = parse_session_comment(content)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["session"], "card-xyz")
+        self.assertEqual(info["worktree"], "proj--card-xyz")
+        self.assertEqual(info["vm"], "root@1.2.3.4")
+
+    def test_non_lumifydev_json_content(self):
+        content = {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Just a comment"}]},
+            ],
+        }
+        self.assertIsNone(parse_session_comment(content))
 
 
 if __name__ == "__main__":

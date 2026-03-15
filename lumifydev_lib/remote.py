@@ -128,6 +128,30 @@ def ssh_run(vm_host, command):
     )
 
 
+def json_content_to_text(content):
+    """Extract plain text from TipTap JSONContent. Handles both dict (JSONContent) and plain strings."""
+    if isinstance(content, str):
+        return content
+
+    if not isinstance(content, dict):
+        return str(content)
+
+    if content.get("type") == "text":
+        return content.get("text", "")
+
+    parts = []
+    for node in content.get("content", []):
+        node_text = json_content_to_text(node)
+        if node_text:
+            parts.append(node_text)
+
+    # Join paragraphs with newlines, inline text without
+    if content.get("type") in ("doc", "paragraph"):
+        return "\n".join(parts) if content.get("type") == "doc" else "".join(parts)
+
+    return "".join(parts)
+
+
 def build_prompt(title, list_name, description, comments, user_prompt):
     """Compose a Claude Code prompt from card details."""
     prompt_parts = [
@@ -142,7 +166,7 @@ def build_prompt(title, list_name, description, comments, user_prompt):
         prompt_parts.append("\n## Comments")
         for comment in comments:
             user_name = comment.get("user_name", "Unknown")
-            content = comment.get("content", "")
+            content = json_content_to_text(comment.get("content", ""))
             prompt_parts.append(f"- {user_name}: {content}")
 
     if user_prompt:
@@ -156,8 +180,13 @@ def build_prompt(title, list_name, description, comments, user_prompt):
 def parse_session_comment(content):
     """Parse a LumifyDev comment to extract session info.
 
+    Handles both plain text strings and TipTap JSONContent dicts.
     Returns dict with 'session', 'worktree', 'vm' keys, or None if not a LumifyDev comment.
     """
+    # Convert JSONContent to plain text if needed
+    if isinstance(content, dict):
+        content = json_content_to_text(content)
+
     if "[LumifyDev]" not in content:
         return None
 
