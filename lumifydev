@@ -21,6 +21,7 @@ from lumifydev_lib.commands import (
     cmd_run,
     cmd_status,
 )
+from lumifydev_lib.tui import run_tui
 
 
 def main():
@@ -33,6 +34,10 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # menu (interactive TUI — mobile friendly)
+    sub_menu = subparsers.add_parser("menu", help="Interactive TUI (mobile friendly)")
+    sub_menu.set_defaults(func=run_tui)
 
     # config
     sub_config = subparsers.add_parser("config", help="Configure LumifyDev")
@@ -76,7 +81,8 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # No command = launch interactive TUI (mobile friendly)
+        run_tui()
         sys.exit(0)
 
     try:
