@@ -316,7 +316,7 @@ def cross_board_cards_menu(config, sort="newest"):
 
     # Sort by created_at
     reverse = sort == "newest"
-    all_cards.sort(key=lambda c: c.get("created_at", ""), reverse=reverse)
+    all_cards.sort(key=lambda c: c.get("updated_at", ""), reverse=reverse)
 
     # Paginate
     page = 0
