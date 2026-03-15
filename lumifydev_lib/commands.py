@@ -231,6 +231,7 @@ def cmd_run(args):
         session_name=session_name,
         worktree_name=worktree_name,
         prompt=full_prompt,
+        setup_commands=config.get("setup_commands"),
     )
 
     # Post comment back to the card

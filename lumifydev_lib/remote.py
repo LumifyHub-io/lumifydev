@@ -8,11 +8,15 @@ import sys
 from .display import C_RED, C_DIM, C_RESET
 
 
-def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, prompt):
+def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, prompt, setup_commands=None):
     """
     Launch a Claude Code session on a remote VM via SSH + tmux.
 
-    Flow: SSH → create git worktree → start tmux session → launch Claude → send prompt.
+    Flow: SSH → pull latest → create git worktree → run setup → start tmux → launch Claude → send prompt.
+
+    Args:
+        setup_commands: Optional list of shell commands to run in the worktree before starting Claude
+                       (e.g. ["bun install"]). Configured via config.json "setup_commands".
     """
     if not shutil.which("ssh"):
         print(f"{C_RED}ssh not found on PATH.{C_RESET}")
@@ -20,6 +24,17 @@ def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, 
 
     prompt_b64 = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     worktree_dir = f"$HOME/dev/worktrees/{worktree_name}"
+
+    # Build setup commands block
+    if setup_commands:
+        setup_lines = ['cd "$WORKTREE_DIR"', 'echo "Running setup..."']
+        for cmd in setup_commands:
+            setup_lines.append(f"echo '  → {cmd}'")
+            setup_lines.append(cmd)
+        setup_lines.append('echo "Setup complete."')
+        setup_block = "\n        ".join(setup_lines)
+    else:
+        setup_block = "true  # No setup commands configured"
 
     remote_script = f"""
 # Verify repo exists
@@ -37,6 +52,9 @@ if [ -d "$WORKTREE_DIR" ]; then
     WORK_DIR="$WORKTREE_DIR"
 elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
     cd '{vm_project_dir}'
+    # Pull latest before creating worktree
+    echo "Pulling latest..."
+    git pull --ff-only 2>/dev/null || git fetch origin 2>/dev/null || true
     # Determine base branch
     BASE_BRANCH="main"
     if ! git rev-parse --verify main >/dev/null 2>&1; then
@@ -53,6 +71,8 @@ elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
                 cp '{vm_project_dir}/'$envfile "$WORKTREE_DIR/$envfile"
             fi
         done
+        # Run setup commands in worktree
+        {setup_block}
     else
         echo "Worktree creation failed, using main repo"
     fi
