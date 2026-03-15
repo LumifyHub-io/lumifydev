@@ -16,7 +16,34 @@ lumifydev config
 
 This walks you through connecting your LumifyHub workspace and VM.
 
-## Usage
+## Interactive Mode (Mobile Friendly)
+
+Just run `lumifydev` with no arguments to launch the interactive TUI — designed for SSH from your phone:
+
+```bash
+lumifydev
+```
+
+Single-keypress navigation, no typing required:
+
+```
+Main Menu
+─────────────────────────────────────
+
+  1) Boards          — browse by board
+  2) Latest Cards    — newest cards across all boards
+  3) Oldest Cards    — oldest cards across all boards
+
+  q) Quit
+```
+
+- Pick a board → pick a card → **r**un / **s**tatus / **c**heckout / **d**etails
+- Cards are paginated (9 per page) with **n**ext/**p**rev
+- **0** to go back, **q** to quit
+
+## CLI Commands
+
+For scripting or desktop use, all commands are also available directly:
 
 ```bash
 # List your boards
