@@ -37,6 +37,12 @@ def launch_remote_session(vm_host, vm_project_dir, session_name, worktree_name, 
         setup_block = "true  # No setup commands configured"
 
     remote_script = f"""
+# Load shell profile for tools like bun, nvm, etc.
+[ -f "$HOME/.profile" ] && source "$HOME/.profile" 2>/dev/null
+[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null
+[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null
+export PATH="$HOME/.bun/bin:$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | tail -1)/bin:$HOME/.local/bin:$PATH" 2>/dev/null
+
 # Verify repo exists
 if [ ! -d '{vm_project_dir}' ]; then
     echo 'Error: Repository not found at {vm_project_dir}'
