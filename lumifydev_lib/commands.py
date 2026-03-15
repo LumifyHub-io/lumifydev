@@ -204,7 +204,7 @@ def cmd_run(args):
     full_prompt = build_prompt(title, list_name, description, comments, user_prompt)
 
     # Generate session name from card ID
-    session_name = f"card-{card_id[:8]}"
+    session_name = f"card-{card_id}"
     expanded_dir = os.path.expanduser(project_dir)
     project_name = config.get("project_name", os.path.basename(expanded_dir))
     worktree_name = f"{project_name}--{session_name}"
