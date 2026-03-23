@@ -8,7 +8,7 @@ Point at a board card, kick off a remote Claude Code session in an isolated git 
 
 ```bash
 git clone https://github.com/LumifyHub-io/lumifydev.git
-sudo ln -s $(pwd)/lumifydev/lumifydev /usr/local/bin/lumifydev
+sudo ln -sf $(pwd)/lumifydev/lumifydev /usr/local/bin/lumifydev
 ```
 
 No dependencies — just Python 3.7+. If you don't have Python installed:
