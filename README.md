@@ -7,7 +7,7 @@ Point at a board card, kick off a remote Claude Code session in an isolated git 
 ## Install
 
 ```bash
-git clone https://github.com/saadnvd1/lumifydev.git
+git clone https://github.com/LumifyHub-io/lumifydev.git
 sudo ln -s $(pwd)/lumifydev/lumifydev /usr/local/bin/lumifydev
 ```
 
