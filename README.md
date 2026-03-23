@@ -4,6 +4,26 @@ Turn [LumifyHub](https://lumifyhub.io) kanban cards into async Claude Code sessi
 
 Point at a board card, kick off a remote Claude Code session in an isolated git worktree, and get status updates posted back to the card automatically.
 
+## Install
+
+```bash
+git clone https://github.com/saadnvd1/lumifydev.git
+sudo ln -s $(pwd)/lumifydev/lumifydev /usr/local/bin/lumifydev
+```
+
+No dependencies — just Python 3.7+. If you don't have Python installed:
+
+```bash
+# macOS
+brew install python
+
+# Ubuntu/Debian
+sudo apt install python3
+
+# Fedora
+sudo dnf install python3
+```
+
 ## Setup
 
 1. **Get a LumifyHub API key** — Go to your workspace Settings → API Keys
