@@ -68,7 +68,7 @@ elif git -C '{vm_project_dir}' rev-parse --git-dir >/dev/null 2>&1; then
     fi
     # Create worktree
     mkdir -p "$HOME/dev/worktrees"
-    if git worktree add -b '{worktree_name}' "$WORKTREE_DIR" "$BASE_BRANCH" 2>/dev/null; then
+    if git worktree add -B '{worktree_name}' "$WORKTREE_DIR" "$BASE_BRANCH" 2>/dev/null; then
         WORK_DIR="$WORKTREE_DIR"
         echo "Created worktree: $WORKTREE_DIR"
         # Copy env files to worktree
