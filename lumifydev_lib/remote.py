@@ -194,6 +194,9 @@ def parse_session_comment(content):
     if isinstance(content, dict):
         content = json_content_to_text(content)
 
+    # Handle escaped brackets from API (e.g. \[LumifyDev\])
+    content = content.replace("\\[", "[").replace("\\]", "]")
+
     if "[LumifyDev]" not in content:
         return None
 
