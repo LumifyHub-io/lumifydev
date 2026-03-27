@@ -16,12 +16,12 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_loads_valid_config(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"api_key": "lumify_test123", "api_url": "https://lumifyhub.io"}, f)
+            json.dump({"api_key": "lumify_test123", "api_url": "https://www.lumifyhub.io"}, f)
             f.flush()
             with patch("lumifydev_lib.config.CONFIG_FILE", f.name):
                 config = load_config()
                 self.assertEqual(config["api_key"], "lumify_test123")
-                self.assertEqual(config["api_url"], "https://lumifyhub.io")
+                self.assertEqual(config["api_url"], "https://www.lumifyhub.io")
         os.unlink(f.name)
 
 
@@ -45,7 +45,7 @@ class TestRequireConfig(unittest.TestCase):
 
     def test_exits_when_no_api_key(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"api_url": "https://lumifyhub.io"}, f)
+            json.dump({"api_url": "https://www.lumifyhub.io"}, f)
             f.flush()
             with patch("lumifydev_lib.config.CONFIG_FILE", f.name):
                 with self.assertRaises(SystemExit):

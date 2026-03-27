@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-DEFAULT_API_URL = "https://lumifyhub.io"
+DEFAULT_API_URL = "https://www.lumifyhub.io"
 CONFIG_DIR = os.path.expanduser("~/.config/lumifydev")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 

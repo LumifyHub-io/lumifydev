@@ -98,7 +98,7 @@ Stored at `~/.config/lumifydev/config.json`:
 
 ```json
 {
-  "api_url": "https://lumifyhub.io",
+  "api_url": "https://www.lumifyhub.io",
   "api_key": "lumify_...",
   "workspace_id": "...",
   "vm_host": "root@your-vm-ip",

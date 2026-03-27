@@ -18,7 +18,7 @@ class TestAPIRequest(unittest.TestCase):
         mock_resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_resp
 
-        result = api_request("https://lumifyhub.io", "lumify_key", "/api/v1/integrations/boards")
+        result = api_request("https://www.lumifyhub.io", "lumify_key", "/api/v1/integrations/boards")
         self.assertEqual(result, {"boards": []})
 
         # Verify request was built correctly
@@ -37,7 +37,7 @@ class TestAPIRequest(unittest.TestCase):
         mock_urlopen.return_value = mock_resp
 
         result = api_request(
-            "https://lumifyhub.io", "lumify_key",
+            "https://www.lumifyhub.io", "lumify_key",
             "/api/v1/integrations/boards/cards/abc/comments",
             method="POST",
             body={"content": "test comment"},
@@ -52,7 +52,7 @@ class TestAPIRequest(unittest.TestCase):
     def test_http_error_raises_api_error(self, mock_urlopen):
         error_body = json.dumps({"error": "Board not found"}).encode()
         mock_urlopen.side_effect = HTTPError(
-            url="https://lumifyhub.io/api/test",
+            url="https://www.lumifyhub.io/api/test",
             code=404,
             msg="Not Found",
             hdrs={},
@@ -60,7 +60,7 @@ class TestAPIRequest(unittest.TestCase):
         )
 
         with self.assertRaises(APIError) as ctx:
-            api_request("https://lumifyhub.io", "lumify_key", "/api/test")
+            api_request("https://www.lumifyhub.io", "lumify_key", "/api/test")
 
         self.assertEqual(str(ctx.exception), "Board not found")
         self.assertEqual(ctx.exception.status_code, 404)
@@ -68,7 +68,7 @@ class TestAPIRequest(unittest.TestCase):
     @patch("lumifydev_lib.api.urllib.request.urlopen")
     def test_http_error_with_non_json_body(self, mock_urlopen):
         mock_urlopen.side_effect = HTTPError(
-            url="https://lumifyhub.io/api/test",
+            url="https://www.lumifyhub.io/api/test",
             code=500,
             msg="Internal Server Error",
             hdrs={},
@@ -76,7 +76,7 @@ class TestAPIRequest(unittest.TestCase):
         )
 
         with self.assertRaises(APIError) as ctx:
-            api_request("https://lumifyhub.io", "lumify_key", "/api/test")
+            api_request("https://www.lumifyhub.io", "lumify_key", "/api/test")
 
         self.assertEqual(ctx.exception.status_code, 500)
 
@@ -85,7 +85,7 @@ class TestAPIRequest(unittest.TestCase):
         mock_urlopen.side_effect = URLError("Connection refused")
 
         with self.assertRaises(APIError) as ctx:
-            api_request("https://lumifyhub.io", "lumify_key", "/api/test")
+            api_request("https://www.lumifyhub.io", "lumify_key", "/api/test")
 
         self.assertIn("Connection failed", str(ctx.exception))
 
@@ -95,11 +95,11 @@ class TestAPIShorthand(unittest.TestCase):
     def test_api_passes_config(self, mock_api_request):
         mock_api_request.return_value = {"ok": True}
 
-        config = {"api_url": "https://lumifyhub.io", "api_key": "lumify_abc"}
+        config = {"api_url": "https://www.lumifyhub.io", "api_key": "lumify_abc"}
         result = api(config, "/api/test", method="POST", body={"key": "val"})
 
         mock_api_request.assert_called_once_with(
-            "https://lumifyhub.io", "lumify_abc", "/api/test", "POST", {"key": "val"}
+            "https://www.lumifyhub.io", "lumify_abc", "/api/test", "POST", {"key": "val"}
         )
         self.assertEqual(result, {"ok": True})
 
