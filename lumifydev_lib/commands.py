@@ -109,49 +109,38 @@ def cmd_config(_args):
     print(f"{C_DIM}Or just pick a board — you'll be prompted on first use.{C_RESET}")
 
 
-def cmd_link(args):
-    """Link current directory to a board."""
-    config = require_config()
-    board_id = args.board_id
+def _detect_setup_commands(project_dir):
+    """Auto-detect setup commands based on project files."""
+    expanded = os.path.expanduser(project_dir)
+    commands = []
 
-    # Use cwd as project dir
-    project_dir = os.getcwd()
-    project_name = os.path.basename(project_dir)
+    if os.path.exists(os.path.join(expanded, "bun.lockb")) or os.path.exists(os.path.join(expanded, "bunfig.toml")):
+        commands.append("bun install")
+    elif os.path.exists(os.path.join(expanded, "package-lock.json")):
+        commands.append("npm install")
+    elif os.path.exists(os.path.join(expanded, "yarn.lock")):
+        commands.append("yarn install")
+    elif os.path.exists(os.path.join(expanded, "pnpm-lock.yaml")):
+        commands.append("pnpm install")
+    elif os.path.exists(os.path.join(expanded, "package.json")):
+        commands.append("npm install")
 
-    # Try to derive VM path
-    home = os.path.expanduser("~")
-    vm_project_dir = ""
-    if project_dir.startswith(os.path.join(home, "dev")):
-        rel = os.path.relpath(project_dir, os.path.join(home, "dev"))
-        vm_project_dir = f"/root/dev/{rel}"
+    if os.path.exists(os.path.join(expanded, "requirements.txt")):
+        commands.append("pip install -r requirements.txt")
+    elif os.path.exists(os.path.join(expanded, "pyproject.toml")):
+        commands.append("pip install -e .")
 
-    # Let user override
-    default_vm_dir = vm_project_dir
-    vm_hint = f" [{default_vm_dir}]" if default_vm_dir else " (e.g. /root/dev/my-project)"
-    vm_project_dir = input(f"VM project dir{vm_hint}: ").strip() or default_vm_dir
-
-    board_config = {
-        "project_dir": project_dir,
-        "project_name": project_name,
-        "vm_project_dir": vm_project_dir,
-    }
-
-    save_board_config(config, board_id, board_config)
-
-    print(f"{C_GREEN}Linked!{C_RESET} Board {C_DIM}{board_id[:8]}...{C_RESET} → {project_dir}")
+    return commands
 
 
-def prompt_board_setup(config, board_id, board_title=""):
-    """Prompt user to configure project for a board. Returns board config or None."""
-    from .display import C_BOLD, C_DIM, C_GREEN, C_YELLOW, C_RESET
+def _collect_board_config(default_project_dir="", existing_board_cfg=None):
+    """Collect project config for a board interactively. Returns board config dict or None."""
+    existing = existing_board_cfg or {}
 
-    label = f" ({board_title})" if board_title else ""
-    print(f"{C_YELLOW}No project linked to this board{label}.{C_RESET}")
-    print(f"{C_DIM}Set up now to run sessions.{C_RESET}")
-    print()
-
-    # Project directory
-    project_dir = input(f"Local project dir (e.g. ~/dev/my-project): ").strip()
+    # Local project dir
+    default_dir = existing.get("project_dir", default_project_dir)
+    dir_hint = f" [{default_dir}]" if default_dir else ""
+    project_dir = input(f"Local project dir{dir_hint}: ").strip() or default_dir
     if not project_dir:
         print(f"{C_DIM}Skipped. You can link later: lumifydev link <board-id>{C_RESET}")
         return None
@@ -159,21 +148,69 @@ def prompt_board_setup(config, board_id, board_title=""):
     project_dir = os.path.expanduser(project_dir)
     project_name = os.path.basename(project_dir)
 
-    # VM project dir — auto-derive
+    # VM project dir — auto-derive from local path
     home = os.path.expanduser("~")
-    default_vm_dir = ""
-    if project_dir.startswith(os.path.join(home, "dev")):
+    default_vm_dir = existing.get("vm_project_dir", "")
+    if not default_vm_dir and project_dir.startswith(os.path.join(home, "dev")):
         rel = os.path.relpath(project_dir, os.path.join(home, "dev"))
         default_vm_dir = f"/root/dev/{rel}"
 
-    vm_hint = f" [{default_vm_dir}]" if default_vm_dir else ""
+    vm_hint = f" [{default_vm_dir}]" if default_vm_dir else " (e.g. /root/dev/my-project)"
     vm_project_dir = input(f"VM project dir{vm_hint}: ").strip() or default_vm_dir
+
+    # Setup commands — auto-detect, let user override
+    detected = _detect_setup_commands(project_dir)
+    default_setup = existing.get("setup_commands", detected)
+    default_setup_str = ", ".join(default_setup) if default_setup else ""
+
+    if default_setup_str:
+        print(f"{C_DIM}Detected setup: {default_setup_str}{C_RESET}")
+        setup_input = input(f"Setup commands [{default_setup_str}]: ").strip()
+    else:
+        setup_input = input(f"Setup commands {C_DIM}(comma-separated, Enter to skip){C_RESET}: ").strip()
+
+    if setup_input:
+        setup_commands = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
+    else:
+        setup_commands = default_setup
 
     board_cfg = {
         "project_dir": project_dir,
         "project_name": project_name,
         "vm_project_dir": vm_project_dir,
     }
+    if setup_commands:
+        board_cfg["setup_commands"] = setup_commands
+
+    return board_cfg
+
+
+def cmd_link(args):
+    """Link current directory (or specified path) to a board."""
+    config = require_config()
+    board_id = args.board_id
+
+    existing_board_cfg = get_board_config(config, board_id)
+    default_dir = os.getcwd()
+
+    board_cfg = _collect_board_config(default_project_dir=default_dir, existing_board_cfg=existing_board_cfg)
+    if not board_cfg:
+        return
+
+    save_board_config(config, board_id, board_cfg)
+    print(f"{C_GREEN}Linked!{C_RESET} Board {C_DIM}{board_id[:8]}...{C_RESET} → {board_cfg['project_dir']}")
+
+
+def prompt_board_setup(config, board_id, board_title=""):
+    """Prompt user to configure project for a board (lazy setup). Returns board config or None."""
+    label = f" ({board_title})" if board_title else ""
+    print(f"{C_YELLOW}No project linked to this board{label}.{C_RESET}")
+    print(f"{C_DIM}Set up now to run sessions.{C_RESET}")
+    print()
+
+    board_cfg = _collect_board_config()
+    if not board_cfg:
+        return None
 
     save_board_config(config, board_id, board_cfg)
     print(f"{C_GREEN}Linked!{C_RESET}")
