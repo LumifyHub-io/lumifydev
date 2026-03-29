@@ -5,7 +5,7 @@ LumifyDev — Turn LumifyHub kanban cards into async Claude Code sessions.
 Point at a board card, kick off a Claude Code session on your VM,
 and get status updates posted back to the card automatically.
 
-Requires a LumifyHub account (https://lumifyhub.io) and API key.
+Requires a LumifyHub account (https://lumifyhub.io) and API key or CLI token.
 """
 
 import argparse
@@ -20,6 +20,7 @@ from lumifydev_lib.commands import (
     cmd_config,
     cmd_run,
     cmd_status,
+    cmd_workspaces,
 )
 from lumifydev_lib.tui import run_tui
 
@@ -42,6 +43,10 @@ def main():
     # config
     sub_config = subparsers.add_parser("config", help="Configure LumifyDev")
     sub_config.set_defaults(func=cmd_config)
+
+    # workspaces
+    sub_workspaces = subparsers.add_parser("workspaces", help="List available workspaces")
+    sub_workspaces.set_defaults(func=cmd_workspaces)
 
     # boards
     sub_boards = subparsers.add_parser("boards", help="List boards in workspace")

@@ -5,8 +5,11 @@ import sys
 import tty
 import termios
 
-from .api import api, APIError
-from .config import require_config
+from .api import api, api_request, APIError
+from .config import (
+    require_config, save_config,
+    is_multi_workspace, get_workspace_config, get_current_workspace_id, get_workspace_name,
+)
 from .display import C_BOLD, C_DIM, C_RED, C_GREEN, C_YELLOW, C_CYAN, C_RESET
 from .remote import (
     build_prompt,
@@ -55,18 +58,35 @@ def run_tui(_args=None):
             result = main_menu(config)
             if result is None:
                 return
+            # Reload config in case workspace was switched
+            if result == "reload":
+                config = require_config()
         except KeyboardInterrupt:
             return
 
 
 def main_menu(config):
-    """Top-level menu: Boards, Latest Cards, Oldest Cards."""
+    """Top-level menu: Boards, Latest Cards, Oldest Cards, Switch Workspace."""
+    ws_config = get_workspace_config(config)
+
     clear_screen()
+
+    # Show current workspace for multi-workspace mode
+    if is_multi_workspace(config):
+        ws_name = get_workspace_name(config)
+        print(f"{C_DIM}Workspace: {C_RESET}{C_BOLD}{ws_name}{C_RESET}")
+        print()
+
     print(f"{C_BOLD}{C_YELLOW}Main Menu{C_RESET}")
     print()
     print(f"  {C_BOLD}{C_CYAN}1{C_RESET}) Boards")
     print(f"  {C_BOLD}{C_CYAN}2{C_RESET}) Latest Cards")
     print(f"  {C_BOLD}{C_CYAN}3{C_RESET}) Oldest Cards")
+
+    if is_multi_workspace(config):
+        print()
+        print(f"  {C_BOLD}{C_MAGENTA}w{C_RESET}) Switch Workspace")
+
     print()
     print(f"  {C_DIM}q) Quit{C_RESET}")
     print()
@@ -78,32 +98,103 @@ def main_menu(config):
     if ch in ("q", "Q", "\x03"):
         return None
 
+    if ch in ("w", "W") and is_multi_workspace(config):
+        result = workspace_picker(config)
+        if result:
+            return "reload"
+        return "continue"
+
     if ch == "1":
-        board = boards_menu(config)
+        board = boards_menu(ws_config)
         if board is None:
             return "continue"
         while True:
-            card = cards_menu(config, board)
+            card = cards_menu(ws_config, board)
             if card is None:
                 break
-            action_result = card_action_menu(config, card)
+            action_result = card_action_menu(ws_config, card)
             if action_result == "back_to_boards":
                 break
         return "continue"
 
     if ch == "2":
-        card = cross_board_cards_menu(config, sort="newest")
+        card = cross_board_cards_menu(ws_config, sort="newest")
         if card is not None:
-            card_action_menu(config, card)
+            card_action_menu(ws_config, card)
         return "continue"
 
     if ch == "3":
-        card = cross_board_cards_menu(config, sort="oldest")
+        card = cross_board_cards_menu(ws_config, sort="oldest")
         if card is not None:
-            card_action_menu(config, card)
+            card_action_menu(ws_config, card)
         return "continue"
 
     return "continue"  # Invalid key, redraw
+
+
+def workspace_picker(config):
+    """Show workspace picker. Returns True if workspace was switched."""
+    clear_screen()
+    print(f"{C_DIM}Loading workspaces...{C_RESET}")
+
+    try:
+        data = api_request(
+            config["api_url"], config["api_key"],
+            "/api/v1/integrations/auth/verify"
+        )
+    except APIError as e:
+        clear_screen()
+        print(f"{C_RED}Failed to load workspaces: {e}{C_RESET}")
+        wait_for_key()
+        return False
+
+    workspaces = data.get("workspaces", [])
+    current_ws = get_current_workspace_id(config)
+
+    if not workspaces:
+        clear_screen()
+        print(f"{C_DIM}No workspaces found.{C_RESET}")
+        wait_for_key()
+        return False
+
+    clear_screen()
+    print(f"{C_BOLD}{C_YELLOW}Switch Workspace{C_RESET}")
+    print()
+
+    for i, ws in enumerate(workspaces[:9]):
+        key = i + 1
+        marker = f" {C_GREEN}← current{C_RESET}" if ws["id"] == current_ws else ""
+        print(f"  {C_BOLD}{C_CYAN}{key}{C_RESET}) {ws['name']}{marker}")
+
+    print()
+    print(f"  {C_DIM}0) Back{C_RESET}")
+    print()
+    print(f"{C_BOLD}Select: {C_RESET}", end="", flush=True)
+
+    ch = read_char()
+    print(ch)
+
+    if ch in ("0", "q", "Q", "\x03"):
+        return False
+
+    if ch.isdigit() and 1 <= int(ch) <= min(9, len(workspaces)):
+        selected = workspaces[int(ch) - 1]
+        config["default_workspace"] = selected["id"]
+        config["current_workspace"] = selected["id"]
+
+        # Ensure workspace entry exists in config
+        if "workspaces" not in config:
+            config["workspaces"] = {}
+        if selected["id"] not in config["workspaces"]:
+            config["workspaces"][selected["id"]] = {"name": selected["name"]}
+
+        save_config(config)
+        clear_screen()
+        print(f"{C_GREEN}Switched to: {selected['name']}{C_RESET}")
+        wait_for_key()
+        return True
+
+    return False
 
 
 def boards_menu(config):
