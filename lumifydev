@@ -18,6 +18,7 @@ from lumifydev_lib.commands import (
     cmd_cards,
     cmd_checkout,
     cmd_config,
+    cmd_link,
     cmd_run,
     cmd_status,
     cmd_workspaces,
@@ -47,6 +48,11 @@ def main():
     # workspaces
     sub_workspaces = subparsers.add_parser("workspaces", help="List available workspaces")
     sub_workspaces.set_defaults(func=cmd_workspaces)
+
+    # link
+    sub_link = subparsers.add_parser("link", help="Link current directory to a board")
+    sub_link.add_argument("board_id", help="Board ID (page ID from lumifydev boards)")
+    sub_link.set_defaults(func=cmd_link)
 
     # boards
     sub_boards = subparsers.add_parser("boards", help="List boards in workspace")
