@@ -5,8 +5,13 @@ import sys
 import tty
 import termios
 
-from .api import api, APIError
-from .config import require_config
+from .api import api, api_request, APIError
+from .config import (
+    require_config, save_config,
+    is_multi_workspace, get_current_workspace_id, get_workspace_name,
+    get_board_config, get_effective_config,
+)
+from .commands import prompt_board_setup
 from .display import C_BOLD, C_DIM, C_RED, C_GREEN, C_YELLOW, C_CYAN, C_RESET
 from .remote import (
     build_prompt,
@@ -55,18 +60,33 @@ def run_tui(_args=None):
             result = main_menu(config)
             if result is None:
                 return
+            # Reload config in case workspace was switched or board was linked
+            if result == "reload":
+                config = require_config()
         except KeyboardInterrupt:
             return
 
 
 def main_menu(config):
-    """Top-level menu: Boards, Latest Cards, Oldest Cards."""
+    """Top-level menu: Boards, Latest Cards, Oldest Cards, Switch Workspace."""
     clear_screen()
+
+    # Show current workspace for multi-workspace mode
+    if is_multi_workspace(config):
+        ws_name = get_workspace_name(config)
+        print(f"{C_DIM}Workspace: {C_RESET}{C_BOLD}{ws_name}{C_RESET}")
+        print()
+
     print(f"{C_BOLD}{C_YELLOW}Main Menu{C_RESET}")
     print()
     print(f"  {C_BOLD}{C_CYAN}1{C_RESET}) Boards")
     print(f"  {C_BOLD}{C_CYAN}2{C_RESET}) Latest Cards")
     print(f"  {C_BOLD}{C_CYAN}3{C_RESET}) Oldest Cards")
+
+    if is_multi_workspace(config):
+        print()
+        print(f"  {C_BOLD}{C_MAGENTA}w{C_RESET}) Switch Workspace")
+
     print()
     print(f"  {C_DIM}q) Quit{C_RESET}")
     print()
@@ -78,6 +98,12 @@ def main_menu(config):
     if ch in ("q", "Q", "\x03"):
         return None
 
+    if ch in ("w", "W") and is_multi_workspace(config):
+        result = workspace_picker(config)
+        if result:
+            return "reload"
+        return "continue"
+
     if ch == "1":
         board = boards_menu(config)
         if board is None:
@@ -86,24 +112,89 @@ def main_menu(config):
             card = cards_menu(config, board)
             if card is None:
                 break
-            action_result = card_action_menu(config, card)
+            action_result = card_action_menu(config, card, board)
             if action_result == "back_to_boards":
                 break
-        return "continue"
+        return "reload"  # Reload in case a board was linked
 
     if ch == "2":
         card = cross_board_cards_menu(config, sort="newest")
         if card is not None:
             card_action_menu(config, card)
-        return "continue"
+        return "reload"
 
     if ch == "3":
         card = cross_board_cards_menu(config, sort="oldest")
         if card is not None:
             card_action_menu(config, card)
-        return "continue"
+        return "reload"
 
     return "continue"  # Invalid key, redraw
+
+
+def workspace_picker(config):
+    """Show workspace picker. Returns True if workspace was switched."""
+    clear_screen()
+    print(f"{C_DIM}Loading workspaces...{C_RESET}")
+
+    try:
+        data = api_request(
+            config["api_url"], config["api_key"],
+            "/api/v1/integrations/auth/verify"
+        )
+    except APIError as e:
+        clear_screen()
+        print(f"{C_RED}Failed to load workspaces: {e}{C_RESET}")
+        wait_for_key()
+        return False
+
+    workspaces = data.get("workspaces", [])
+    current_ws = get_current_workspace_id(config)
+
+    if not workspaces:
+        clear_screen()
+        print(f"{C_DIM}No workspaces found.{C_RESET}")
+        wait_for_key()
+        return False
+
+    clear_screen()
+    print(f"{C_BOLD}{C_YELLOW}Switch Workspace{C_RESET}")
+    print()
+
+    for i, ws in enumerate(workspaces[:9]):
+        key = i + 1
+        marker = f" {C_GREEN}← current{C_RESET}" if ws["id"] == current_ws else ""
+        print(f"  {C_BOLD}{C_CYAN}{key}{C_RESET}) {ws['name']}{marker}")
+
+    print()
+    print(f"  {C_DIM}0) Back{C_RESET}")
+    print()
+    print(f"{C_BOLD}Select: {C_RESET}", end="", flush=True)
+
+    ch = read_char()
+    print(ch)
+
+    if ch in ("0", "q", "Q", "\x03"):
+        return False
+
+    if ch.isdigit() and 1 <= int(ch) <= min(9, len(workspaces)):
+        selected = workspaces[int(ch) - 1]
+        config["default_workspace"] = selected["id"]
+        config["current_workspace"] = selected["id"]
+
+        # Ensure workspace entry exists in config
+        if "workspaces" not in config:
+            config["workspaces"] = {}
+        if selected["id"] not in config["workspaces"]:
+            config["workspaces"][selected["id"]] = {"name": selected["name"]}
+
+        save_config(config)
+        clear_screen()
+        print(f"{C_GREEN}Switched to: {selected['name']}{C_RESET}")
+        wait_for_key()
+        return True
+
+    return False
 
 
 def boards_menu(config):
@@ -137,7 +228,9 @@ def boards_menu(config):
         icon = board.get("icon", "")
         title = board.get("title", "Untitled")
         prefix = f"{icon} " if icon else ""
-        print(f"  {C_BOLD}{C_CYAN}{key}{C_RESET}) {prefix}{title}")
+        linked = get_board_config(config, board["id"])
+        link_marker = f" {C_GREEN}✓{C_RESET}" if linked else ""
+        print(f"  {C_BOLD}{C_CYAN}{key}{C_RESET}) {prefix}{title}{link_marker}")
 
     print()
     print(f"  {C_DIM}q) Quit{C_RESET}")
@@ -381,10 +474,11 @@ def cross_board_cards_menu(config, sort="newest"):
             return page_cards[int(ch) - 1]
 
 
-def card_action_menu(config, card):
+def card_action_menu(config, card, board=None):
     """Show actions for a selected card. Returns None to go back, 'back_to_boards' to jump."""
     card_id = card["id"]
     title = card.get("title", "Untitled")
+    board_id = board["id"] if board else card.get("_board_id", "")
 
     while True:
         clear_screen()
@@ -416,7 +510,7 @@ def card_action_menu(config, card):
             return "back_to_boards"
 
         if ch in ("r", "R"):
-            do_run(config, card)
+            do_run(config, card, board_id)
 
         elif ch in ("s", "S"):
             do_status(config, card_id)
@@ -428,7 +522,7 @@ def card_action_menu(config, card):
             do_details(config, card_id)
 
 
-def do_run(config, card):
+def do_run(config, card, board_id=""):
     """Run a Claude Code session for a card."""
     card_id = card["id"]
     title = card.get("title", "Untitled")
@@ -436,12 +530,30 @@ def do_run(config, card):
     list_name = card.get("list_name", "")
 
     vm_host = config.get("vm_host")
-    project_dir = config.get("project_dir")
-
-    if not vm_host or not project_dir:
+    if not vm_host:
         clear_screen()
-        print(f"{C_RED}VM host or project dir not configured.{C_RESET}")
+        print(f"{C_RED}VM host not configured.{C_RESET}")
         print("Run: lumifydev config")
+        wait_for_key()
+        return
+
+    # Get board-specific config
+    effective = get_effective_config(config, board_id) if board_id else config
+    project_dir = effective.get("project_dir")
+
+    if not project_dir and board_id:
+        clear_screen()
+        board_title = card.get("_board_label", "")
+        board_cfg = prompt_board_setup(config, board_id, board_title)
+        if not board_cfg:
+            return
+        effective = get_effective_config(config, board_id)
+        project_dir = effective.get("project_dir")
+
+    if not project_dir:
+        clear_screen()
+        print(f"{C_RED}No project linked to this board.{C_RESET}")
+        print("Run: lumifydev link <board-id>")
         wait_for_key()
         return
 
@@ -467,10 +579,10 @@ def do_run(config, card):
 
     session_name = f"card-{card_id}"
     expanded_dir = os.path.expanduser(project_dir)
-    project_name = config.get("project_name", os.path.basename(expanded_dir))
+    project_name = effective.get("project_name", os.path.basename(expanded_dir))
     worktree_name = f"{project_name}--{session_name}"
 
-    vm_project_dir = config.get("vm_project_dir", "")
+    vm_project_dir = effective.get("vm_project_dir", "")
     if not vm_project_dir:
         home = os.path.expanduser("~")
         if expanded_dir.startswith(os.path.join(home, "dev")):
@@ -487,7 +599,7 @@ def do_run(config, card):
         session_name=session_name,
         worktree_name=worktree_name,
         prompt=full_prompt,
-        setup_commands=config.get("setup_commands"),
+        setup_commands=effective.get("setup_commands"),
     )
 
     # Post comment
@@ -562,7 +674,16 @@ def do_checkout(config, card_id):
         return
 
     worktree = info["worktree"]
-    project_dir = os.path.expanduser(config.get("project_dir", "."))
+
+    # Find project_dir from board configs by matching project_name prefix
+    project_dir = "."
+    for board_cfg in config.get("boards", {}).values():
+        pname = board_cfg.get("project_name", "")
+        if pname and worktree.startswith(pname):
+            project_dir = board_cfg.get("project_dir", ".")
+            break
+
+    project_dir = os.path.expanduser(project_dir)
 
     clear_screen()
     print(f"{C_DIM}Checking out: {worktree}{C_RESET}")

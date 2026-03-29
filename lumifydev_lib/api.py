@@ -12,13 +12,21 @@ class APIError(Exception):
         self.status_code = status_code
 
 
-def api_request(api_url, api_key, path, method="GET", body=None):
-    """Make an authenticated request to the LumifyHub API."""
+def api_request(api_url, api_key, path, method="GET", body=None, workspace_id=None):
+    """Make an authenticated request to the LumifyHub API.
+
+    For CLI tokens (lhcli_*), includes x-workspace-id header when workspace_id is provided.
+    For workspace API keys (lumify_*), workspace_id is ignored (embedded in key).
+    """
     url = f"{api_url}{path}"
     headers = {
         "x-api-key": api_key,
         "Content-Type": "application/json",
     }
+
+    # CLI tokens need workspace context via header
+    if workspace_id and api_key.startswith("lhcli_"):
+        headers["x-workspace-id"] = workspace_id
 
     data = None
     if body is not None:
@@ -40,6 +48,10 @@ def api_request(api_url, api_key, path, method="GET", body=None):
         raise APIError(f"Connection failed: {e.reason}")
 
 
-def api(config, path, method="GET", body=None):
-    """Shorthand for api_request using loaded config."""
-    return api_request(config["api_url"], config["api_key"], path, method, body)
+def api(config, path, method="GET", body=None, workspace_id=None):
+    """Shorthand for api_request using loaded config.
+
+    Resolves workspace_id from: explicit param > current_workspace > default_workspace.
+    """
+    ws_id = workspace_id or config.get("current_workspace") or config.get("default_workspace")
+    return api_request(config["api_url"], config["api_key"], path, method, body, workspace_id=ws_id)
